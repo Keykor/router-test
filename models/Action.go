@@ -1,7 +1,7 @@
 package models
 
 type Action struct {
-	id          int
+	ID          string
 	description string
 	actionType  ActionType
 	shipment    Shipment
