@@ -1,7 +1,7 @@
 package states
 
 import (
-	"router/models"
+	"journey/models"
 )
 
 type JourneyState interface {

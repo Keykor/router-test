@@ -2,7 +2,7 @@ package states
 
 import (
 	"errors"
-	"router/models"
+	"journey/models"
 )
 
 type AssignedState struct{}

@@ -2,13 +2,13 @@ package states
 
 import (
 	"errors"
-	"router/models"
+	"journey/models"
 )
 
 type StartedState struct{}
 
 func (s *StartedState) Name() string {
-	return "Assigned"
+	return "Started"
 }
 
 func (s *StartedState) AddAction(actionToAdd models.Action, actions *[]models.Action) (JourneyState, error) {

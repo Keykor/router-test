@@ -1,78 +1,98 @@
 package workflows
 
 import (
-	"errors"
-	"fmt"
-	"router/models"
-	"router/workflows/states"
+	"go.temporal.io/sdk/temporal"
+	"journey/models"
+	"journey/workflows/states"
 
 	"go.temporal.io/sdk/workflow"
 )
 
-type Signal struct {
-	Method  string
-	Payload interface{}
-}
-
-func JourneyWorkflow(ctx workflow.Context, journeyID string) error {
-	var currentState states.JourneyState = &states.AssignedState{}
+func JourneyWorkflow(ctx workflow.Context) error {
+	var currentState states.JourneyState = &states.CreatedState{}
 	var endReason models.EndReason
-	var driver models.Driver
+	var assignedDriver models.Driver
 	actions := []models.Action{}
+	doneChan := workflow.NewChannel(ctx)
 
-	for currentState.Name() != "Finalized" {
-		var signal Signal
-		workflow.GetSignalChannel(ctx, "signal").Receive(ctx, &signal)
-
-		var nextState states.JourneyState
-		var err error
-
-		switch signal.Method {
-		case "addAction":
-			action, ok := signal.Payload.(models.Action)
-			if !ok {
-				err = errors.New("invalid payload for addAction")
-			} else {
-				nextState, err = currentState.AddAction(action, &actions)
-			}
-		case "removeAction":
-			action, ok := signal.Payload.(models.Action)
-			if !ok {
-				err = errors.New("invalid payload for removeAction")
-			} else {
-				nextState, err = currentState.RemoveAction(action, &actions)
-			}
-		case "assignDriver":
-			possibleDriver, ok := signal.Payload.(models.Driver)
-			if !ok {
-				err = errors.New("invalid payload for assignDriver")
-			} else {
-				nextState, err = currentState.AssignDriver(possibleDriver, &driver)
-			}
-		case "startJourney":
-			nextState, err = currentState.StartJourney()
-		case "endJourney":
-			possibleReason, ok := signal.Payload.(models.EndReason)
-			if !ok {
-				err = errors.New("invalid payload for endJourney")
-			} else {
-				nextState, err = currentState.EndJourney(possibleReason, &endReason)
-			}
-		default:
-			err = fmt.Errorf("unknown method: %s", signal.Method)
-		}
-
-		if err != nil {
-			workflow.GetLogger(ctx).Error("error managing the signal", "signal", signal.Method, "error", err)
-			continue
-		}
-
-		if nextState != nil {
-			currentState = nextState
-		}
-		workflow.GetLogger(ctx).Info("State updated", "newState", currentState.Name())
+	// Search Attributes
+	// command: tctl admin cluster add-search-attributes --name JourneyState --type Keyword
+	journeyStateKey := temporal.NewSearchAttributeKeyKeyword("JourneyState")
+	err := workflow.UpsertTypedSearchAttributes(ctx, journeyStateKey.ValueSet(currentState.Name()))
+	if err != nil {
+		return err
 	}
 
-	workflow.GetLogger(ctx).Info("Journey ended", "journeyID", journeyID)
+	// Query Handlers
+	workflow.SetQueryHandler(ctx, "currentState", func() (string, error) {
+		return currentState.Name(), nil
+	})
+	workflow.SetQueryHandler(ctx, "actions", func() ([]models.Action, error) {
+		return actions, nil
+	})
+	workflow.SetQueryHandler(ctx, "driver", func() (models.Driver, error) {
+		return assignedDriver, nil
+	})
+	workflow.SetQueryHandler(ctx, "endReason", func() (models.EndReason, error) {
+		return endReason, nil
+	})
+
+	// Update Handlers
+	workflow.SetUpdateHandler(ctx, "addAction", func(action models.Action) (string, error) {
+		nextState, err := currentState.AddAction(action, &actions)
+		handleStateTransition(ctx, &currentState, nextState, err)
+		return currentState.Name(), err
+	})
+
+	workflow.SetUpdateHandler(ctx, "removeAction", func(action models.Action) (string, error) {
+		nextState, err := currentState.RemoveAction(action, &actions)
+		handleStateTransition(ctx, &currentState, nextState, err)
+		return currentState.Name(), err
+	})
+
+	workflow.SetUpdateHandler(ctx, "assignDriver", func(driver models.Driver) (string, error) {
+		nextState, err := currentState.AssignDriver(driver, &assignedDriver)
+		handleStateTransition(ctx, &currentState, nextState, err)
+		return currentState.Name(), err
+	})
+
+	workflow.SetUpdateHandler(ctx, "startJourney", func() (string, error) {
+		nextState, err := currentState.StartJourney()
+		handleStateTransition(ctx, &currentState, nextState, err)
+		return currentState.Name(), err
+	})
+
+	workflow.SetUpdateHandler(ctx, "endJourney", func(reason models.EndReason) (string, error) {
+		nextState, err := currentState.EndJourney(reason, &endReason)
+		handleStateTransition(ctx, &currentState, nextState, err)
+		if nextState.Name() == "Finalized" {
+			doneChan.Send(ctx, true)
+		}
+		return currentState.Name(), err
+	})
+
+	// Wait for the journey to end
+	doneChan.Receive(ctx, nil)
+	workflow.GetLogger(ctx).Info("Journey ended", "endReason", endReason)
 	return nil
+}
+
+func handleStateTransition(ctx workflow.Context, currentState *states.JourneyState, nextState states.JourneyState, err error) {
+	if err != nil {
+		workflow.GetLogger(ctx).Error("error processing state transition", "error", err)
+		return
+	}
+	if nextState != nil {
+		*currentState = nextState
+
+		// Update search attributes
+		journeyStateKey := temporal.NewSearchAttributeKeyKeyword("JourneyState")
+		updateErr := workflow.UpsertTypedSearchAttributes(ctx, journeyStateKey.ValueSet((*currentState).Name()))
+		if updateErr != nil {
+			workflow.GetLogger(ctx).Error("error updating search attributes", "error", updateErr)
+			return
+		}
+
+		workflow.GetLogger(ctx).Info("State updated", "newState", nextState.Name())
+	}
 }

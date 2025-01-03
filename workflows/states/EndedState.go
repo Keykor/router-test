@@ -2,13 +2,13 @@ package states
 
 import (
 	"errors"
-	"router/models"
+	"journey/models"
 )
 
 type EndedState struct{}
 
 func (s *EndedState) Name() string {
-	return "Assigned"
+	return "Ended"
 }
 
 func (s *EndedState) AddAction(actionToAdd models.Action, actions *[]models.Action) (JourneyState, error) {
@@ -56,9 +56,5 @@ func (s *EndedState) StartJourney() (JourneyState, error) {
 }
 
 func (s *EndedState) EndJourney(reasonToEnd models.EndReason, workflowEndReason *models.EndReason) (JourneyState, error) {
-	if reasonToEnd == models.ReasonCancelled {
-		workflowEndReason = &reasonToEnd
-		return &EndedState{}, nil
-	}
-	return nil, errors.New("cannot end created journey unless the reason is 'cancel'")
+	return nil, errors.New("cannot end an ended journey")
 }
